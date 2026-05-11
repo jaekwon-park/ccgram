@@ -35,6 +35,8 @@ Key functions: create_bot(), handle_new_message().
 import asyncio
 import io
 import logging
+import os
+import re
 import time
 from pathlib import Path
 
@@ -139,6 +141,71 @@ from .transcribe import transcribe_voice
 from .utils import ccbot_dir
 
 logger = logging.getLogger(__name__)
+
+# Base directory for auto-creating topic sessions: {base}/{group_slug}/{topic_slug}
+CCBOT_SESSION_BASE_DIR = os.environ.get("CCBOT_SESSION_BASE_DIR", "")
+
+
+def _name_to_slug(name: str) -> str:
+    slug = re.sub(r"[^\w\-]", "-", name.lower())
+    return re.sub(r"-+", "-", slug).strip("-") or name
+
+
+async def _get_group_slug(bot: Bot, chat_id: int) -> str:
+    try:
+        info = await bot.get_chat(chat_id=chat_id)
+        return _name_to_slug(info.title or str(abs(chat_id)))
+    except Exception:
+        return str(abs(chat_id))
+
+
+async def _auto_create_and_bind(
+    update: object,
+    context: object,
+    user: object,
+    chat: object,
+    thread_id: int,
+    topic_path: str,
+    topic_name: str,
+    text: str,
+) -> None:
+    """Create tmux window at topic_path and bind it directly (no CallbackQuery needed)."""
+    from telegram import Update as TGUpdate
+    from telegram.ext import ContextTypes
+
+    assert isinstance(update, TGUpdate)
+    assert isinstance(context, ContextTypes.DEFAULT_TYPE)
+
+    success, message, created_wname, created_wid = await tmux_manager.create_window(
+        topic_path
+    )
+    if not success:
+        await safe_reply(update.message, f"❌ {message}")
+        return
+
+    await session_manager.wait_for_session_map_entry(created_wid, timeout=5.0)
+    session_manager.bind_thread(
+        user.id, chat.id, thread_id, created_wid, window_name=topic_name
+    )
+    session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+
+    if created_wname != topic_name:
+        try:
+            await context.bot.edit_forum_topic(
+                chat_id=chat.id,
+                message_thread_id=thread_id,
+                name=created_wname,
+            )
+        except Exception as e:
+            logger.debug("Failed to rename topic: %s", e)
+
+    await safe_reply(update.message, f"✅ {message}\n\nCreated. Send messages here.")
+
+    if text:
+        send_ok, send_msg = await session_manager.send_to_window(created_wid, text)
+        if not send_ok:
+            logger.warning("Failed to forward pending text: %s", send_msg)
+
 
 # Session monitor instance
 session_monitor: SessionMonitor | None = None
@@ -926,6 +993,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     wid = session_manager.get_window_for_thread(user.id, chat.id, thread_id)
     if wid is None:
+        # Extract topic name from the forum topic creation header message.
+        topic_name: str | None = None
+        rtm = update.message.reply_to_message if update.message else None
+        if rtm and rtm.forum_topic_created:
+            topic_name = rtm.forum_topic_created.name
+
         # Unbound topic — check for unbound windows first
         all_windows = await tmux_manager.list_windows()
         bound_ids = {wid for _, _, _, wid in session_manager.iter_thread_bindings()}
@@ -935,13 +1008,44 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if w.window_id not in bound_ids
         ]
         logger.debug(
-            "Window picker check: all=%s, bound=%s, unbound=%s",
+            "Window picker check: all=%s, bound=%s, unbound=%s, topic_name=%s",
             [w.window_name for w in all_windows],
             bound_ids,
             [name for _, name, _ in unbound],
+            topic_name,
         )
 
         if unbound:
+            # Auto-bind if an unbound window name matches the topic name exactly.
+            if topic_name:
+                exact = next(
+                    ((wid, name) for wid, name, _ in unbound if name == topic_name),
+                    None,
+                )
+                if exact:
+                    matched_wid, matched_name = exact
+                    session_manager.bind_thread(
+                        user.id,
+                        chat.id,
+                        thread_id,
+                        matched_wid,
+                        window_name=matched_name,
+                    )
+                    session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+                    logger.info(
+                        "Auto-bound topic '%s' (thread=%d) -> window %s",
+                        matched_name,
+                        thread_id,
+                        matched_wid,
+                    )
+                    await safe_reply(
+                        update.message,
+                        f"✅ Auto-bound to '{matched_name}'. Send messages here.",
+                    )
+                    if text:
+                        await session_manager.send_to_window(matched_wid, text)
+                    return
+
             # Show window picker
             logger.info(
                 "Unbound topic: showing window picker (%d unbound windows, user=%d, thread=%d)",
@@ -959,7 +1063,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await safe_reply(update.message, msg_text, reply_markup=keyboard)
             return
 
-        # No unbound windows — show directory browser to create a new session
+        # No unbound windows — try auto-create from topic name + group base dir.
+        if topic_name and CCBOT_SESSION_BASE_DIR:
+            group_slug = await _get_group_slug(context.bot, chat.id)
+            topic_slug = _name_to_slug(topic_name)
+            auto_path = os.path.join(CCBOT_SESSION_BASE_DIR, group_slug, topic_slug)
+            os.makedirs(auto_path, exist_ok=True)
+            logger.info(
+                "Auto-creating window at %s for topic '%s' (thread=%d)",
+                auto_path,
+                topic_name,
+                thread_id,
+            )
+            await _auto_create_and_bind(
+                update, context, user, chat, thread_id, auto_path, topic_name, text
+            )
+            return
+
+        # Fallback — show directory browser to create a new session
         logger.info(
             "Unbound topic: showing directory browser (user=%d, thread=%d)",
             user.id,
