@@ -17,7 +17,7 @@ Responsibilities:
 Key class: SessionManager (singleton instantiated as `session_manager`).
 Key methods for thread binding access:
   - resolve_window_for_thread: Get window_id for a user's thread
-  - iter_thread_bindings: Generator for iterating all (user_id, thread_id, window_id)
+  - iter_thread_bindings: Generator for iterating all (user_id, chat_id, thread_id, window_id)
   - find_users_for_session: Find all users bound to a session_id
 """
 
@@ -179,12 +179,16 @@ class SessionManager:
                                 new_inner[new_key] = wid
                                 logger.info(
                                     "Migrated thread_binding: uid=%s thread=%s -> %s (chat=%d)",
-                                    uid_str, k, new_key, chat_id_val,
+                                    uid_str,
+                                    k,
+                                    new_key,
+                                    chat_id_val,
                                 )
                             else:
                                 logger.info(
                                     "Dropping old-format thread_binding (no chat_id found): uid=%s key=%s",
-                                    uid_str, k,
+                                    uid_str,
+                                    k,
                                 )
                     if new_inner:
                         self.thread_bindings[uid] = new_inner
@@ -283,8 +287,14 @@ class SessionManager:
         self.window_states = new_window_states
 
         # --- Migrate thread_bindings ---
+        # Conservative policy: never drop a binding here just because the
+        # window is missing right now. Re-resolve by display name when we can,
+        # but leave the binding pointing at the original window_id otherwise
+        # so it can recover if the window is recreated later (e.g. after a
+        # tmux restart). Topic deletion is detected separately by the
+        # periodic forum-topic probe in status_polling.
         for uid, bindings in self.thread_bindings.items():
-            new_bindings: dict[int, str] = {}
+            new_bindings: dict[str, str] = {}
             for tid, val in bindings.items():
                 if self._is_window_id(val):
                     if val in live_ids:
@@ -303,13 +313,16 @@ class SessionManager:
                             self.window_display_names[new_id] = display
                             changed = True
                         else:
+                            # Window missing — keep binding for later recovery.
                             logger.info(
-                                "Dropping stale thread binding: user=%d, thread=%d, wid=%s",
+                                "Preserving dormant thread binding: "
+                                "user=%d, thread=%s, wid=%s (name=%s)",
                                 uid,
                                 tid,
                                 val,
+                                display,
                             )
-                            changed = True
+                            new_bindings[tid] = val
                 else:
                     # Old format: val is window_name
                     new_id = live_by_name.get(val)
@@ -320,7 +333,7 @@ class SessionManager:
                         changed = True
                     else:
                         logger.info(
-                            "Dropping old-format thread binding: user=%d, thread=%d, name=%s",
+                            "Dropping old-format thread binding: user=%d, thread=%s, name=%s",
                             uid,
                             tid,
                             val,
@@ -328,7 +341,7 @@ class SessionManager:
                         changed = True
             self.thread_bindings[uid] = new_bindings
 
-        # Remove empty user entries
+        # Remove user entries that ended up empty (only old-format drops)
         empty_users = [uid for uid, b in self.thread_bindings.items() if not b]
         for uid in empty_users:
             del self.thread_bindings[uid]
@@ -473,7 +486,9 @@ class SessionManager:
                 chat_id,
             )
 
-    def resolve_chat_id(self, user_id: int, thread_id: int | None = None, chat_id: int | None = None) -> int:
+    def resolve_chat_id(
+        self, user_id: int, thread_id: int | None = None, chat_id: int | None = None
+    ) -> int:
         """Resolve the correct chat_id for sending messages.
 
         When chat_id is provided directly (preferred for multi-group), returns it.
@@ -758,7 +773,12 @@ class SessionManager:
     # --- Thread binding management ---
 
     def bind_thread(
-        self, user_id: int, chat_id: int, thread_id: int, window_id: str, window_name: str = ""
+        self,
+        user_id: int,
+        chat_id: int,
+        thread_id: int,
+        window_id: str,
+        window_name: str = "",
     ) -> None:
         """Bind a Telegram topic thread to a tmux window.
 
@@ -805,7 +825,9 @@ class SessionManager:
         )
         return window_id
 
-    def get_window_for_thread(self, user_id: int, chat_id: int, thread_id: int) -> str | None:
+    def get_window_for_thread(
+        self, user_id: int, chat_id: int, thread_id: int
+    ) -> str | None:
         """Look up the window_id bound to a thread."""
         key = f"{chat_id}:{thread_id}"
         bindings = self.thread_bindings.get(user_id)

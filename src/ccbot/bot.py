@@ -729,6 +729,39 @@ def _cancel_bash_capture(user_id: int, chat_id: int, thread_id: int) -> None:
         task.cancel()
 
 
+async def _recover_window_by_display_name(
+    user_id: int,
+    chat_id: int,
+    thread_id: int,
+    old_wid: str,
+    display_name: str,
+) -> str | None:
+    """Try to find a live tmux window matching display_name and rebind to it.
+
+    Returns the new window_id on success (and updates the binding), else None.
+    Used to auto-recover bindings whose original window_id is gone (e.g. after
+    a tmux server restart) but whose display name has been recreated.
+    """
+    if not display_name:
+        return None
+    windows = await tmux_manager.list_windows()
+    candidate = next((w for w in windows if w.window_name == display_name), None)
+    if not candidate or candidate.window_id == old_wid:
+        return None
+    logger.info(
+        "Recovering thread binding: %s -> %s (name=%s) for user=%d thread=%d",
+        old_wid,
+        candidate.window_id,
+        display_name,
+        user_id,
+        thread_id,
+    )
+    session_manager.bind_thread(
+        user_id, chat_id, thread_id, candidate.window_id, display_name
+    )
+    return candidate.window_id
+
+
 async def _capture_bash_output(
     bot: Bot,
     user_id: int,
@@ -948,20 +981,30 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Bound topic — forward to bound window
     w = await tmux_manager.find_window_by_id(wid)
     if not w:
+        # Window missing — try to re-resolve via display name before giving up.
+        # Handles the common case where tmux was restarted and the same window
+        # name was recreated under a new window_id.
         display = session_manager.get_display_name(wid)
-        logger.info(
-            "Stale binding: window %s gone, unbinding (user=%d, thread=%d)",
-            display,
-            user.id,
-            thread_id,
+        recovered = await _recover_window_by_display_name(
+            user.id, chat.id, thread_id, wid, display
         )
-        session_manager.unbind_thread(user.id, chat.id, thread_id)
-        await safe_reply(
-            update.message,
-            f"❌ Window '{display}' no longer exists. Binding removed.\n"
-            "Send a message to start a new session.",
-        )
-        return
+        if recovered:
+            wid = recovered
+            w = await tmux_manager.find_window_by_id(wid)
+        if not w:
+            logger.info(
+                "Stale binding: window %s gone, unbinding (user=%d, thread=%d)",
+                display,
+                user.id,
+                thread_id,
+            )
+            session_manager.unbind_thread(user.id, chat.id, thread_id)
+            await safe_reply(
+                update.message,
+                f"❌ Window '{display}' no longer exists. Binding removed.\n"
+                "Send a message to start a new session.",
+            )
+            return
 
     await update.message.chat.send_action(ChatAction.TYPING)
     await enqueue_status_update(context.bot, user.id, wid, None, thread_id=thread_id)
@@ -992,7 +1035,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if text.startswith("!") and len(text) > 1:
         bash_cmd = text[1:]  # strip leading "!"
         task = asyncio.create_task(
-            _capture_bash_output(context.bot, user.id, chat.id, thread_id, wid, bash_cmd)
+            _capture_bash_output(
+                context.bot, user.id, chat.id, thread_id, wid, bash_cmd
+            )
         )
         _bash_capture_tasks[(user.id, chat.id, thread_id)] = task
 
@@ -1079,7 +1124,11 @@ async def _create_and_bind_window(
                 context.user_data.get("_pending_chat_id") if context.user_data else None
             ) or user.id
             session_manager.bind_thread(
-                user.id, pending_chat_id, pending_thread_id, created_wid, window_name=created_wname
+                user.id,
+                pending_chat_id,
+                pending_thread_id,
+                created_wid,
+                window_name=created_wname,
             )
 
             # Rename the topic to match the window name
@@ -1494,7 +1543,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
         # Rename the topic to match the window name
-        resolved_chat = session_manager.resolve_chat_id(user.id, thread_id, chat_id=bind_chat_id)
+        resolved_chat = session_manager.resolve_chat_id(
+            user.id, thread_id, chat_id=bind_chat_id
+        )
         try:
             await context.bot.edit_forum_topic(
                 chat_id=resolved_chat,
@@ -1801,7 +1852,10 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             await clear_interactive_msg(user_id, bot, thread_id)
 
         # Skip tool call notifications when CCBOT_SHOW_TOOL_CALLS=false
-        if not config.show_tool_calls and msg.content_type in ("tool_use", "tool_result"):
+        if not config.show_tool_calls and msg.content_type in (
+            "tool_use",
+            "tool_result",
+        ):
             continue
 
         parts = build_response_parts(
