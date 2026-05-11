@@ -43,10 +43,12 @@ from pathlib import Path
 from telegram import (
     Bot,
     BotCommand,
+    Chat as TGChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaDocument,
     Update,
+    User as TGUser,
 )
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -160,22 +162,16 @@ async def _get_group_slug(bot: Bot, chat_id: int) -> str:
 
 
 async def _auto_create_and_bind(
-    update: object,
-    context: object,
-    user: object,
-    chat: object,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: TGUser,
+    chat: TGChat,
     thread_id: int,
     topic_path: str,
     topic_name: str,
     text: str,
 ) -> None:
     """Create tmux window at topic_path and bind it directly (no CallbackQuery needed)."""
-    from telegram import Update as TGUpdate
-    from telegram.ext import ContextTypes
-
-    assert isinstance(update, TGUpdate)
-    assert isinstance(context, ContextTypes.DEFAULT_TYPE)
-
     success, message, created_wname, created_wid = await tmux_manager.create_window(
         topic_path
     )
