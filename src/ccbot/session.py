@@ -98,10 +98,11 @@ class SessionManager:
 
     window_states: dict[str, WindowState] = field(default_factory=dict)
     user_window_offsets: dict[int, dict[str, int]] = field(default_factory=dict)
-    thread_bindings: dict[int, dict[int, str]] = field(default_factory=dict)
+    # inner key: "chat_id:thread_id" (str) — includes chat_id to support multiple groups
+    thread_bindings: dict[int, dict[str, str]] = field(default_factory=dict)
     # window_id -> display name (window_name)
     window_display_names: dict[str, str] = field(default_factory=dict)
-    # "user_id:thread_id" -> group chat_id (for supergroup forum topic routing)
+    # "user_id:chat_id:thread_id" -> group chat_id (for supergroup forum topic routing)
     # IMPORTANT: This mapping is essential for supergroup/forum topic support.
     # Telegram Bot API requires group chat_id (negative number like -100xxx)
     # as the chat_id parameter when sending messages to forum topics.
@@ -121,7 +122,7 @@ class SessionManager:
                 str(uid): offsets for uid, offsets in self.user_window_offsets.items()
             },
             "thread_bindings": {
-                str(uid): {str(tid): wid for tid, wid in bindings.items()}
+                str(uid): dict(bindings)
                 for uid, bindings in self.thread_bindings.items()
             },
             "window_display_names": self.window_display_names,
@@ -151,10 +152,25 @@ class SessionManager:
                     int(uid): offsets
                     for uid, offsets in state.get("user_window_offsets", {}).items()
                 }
-                self.thread_bindings = {
-                    int(uid): {int(tid): wid for tid, wid in bindings.items()}
-                    for uid, bindings in state.get("thread_bindings", {}).items()
-                }
+                # Load thread_bindings — migrate old int-keyed format on the fly.
+                # Old: {uid: {thread_id_int: window_id}}
+                # New: {uid: {"chat_id:thread_id": window_id}}
+                # Old keys lack ":" so we drop them (will re-bind on next message).
+                raw_bindings = state.get("thread_bindings", {})
+                self.thread_bindings = {}
+                for uid_str, bindings in raw_bindings.items():
+                    uid = int(uid_str)
+                    new_inner: dict[str, str] = {}
+                    for k, wid in bindings.items():
+                        if ":" in str(k):
+                            new_inner[str(k)] = wid
+                        else:
+                            logger.info(
+                                "Dropping old-format thread_binding (no chat_id): uid=%s key=%s",
+                                uid_str, k,
+                            )
+                    if new_inner:
+                        self.thread_bindings[uid] = new_inner
                 self.window_display_names = state.get("window_display_names", {})
                 self.group_chat_ids = {
                     k: int(v) for k, v in state.get("group_chat_ids", {}).items()
@@ -431,7 +447,8 @@ class SessionManager:
         "Message thread not found". See commit history: 5afc111 → 26cb81f → PR #23.
         """
         tid = thread_id or 0
-        key = f"{user_id}:{tid}"
+        # Key includes chat_id to avoid collisions across groups with same thread_id.
+        key = f"{user_id}:{chat_id}:{tid}"
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
             self._save_state()
@@ -442,22 +459,27 @@ class SessionManager:
                 chat_id,
             )
 
-    def resolve_chat_id(self, user_id: int, thread_id: int | None = None) -> int:
+    def resolve_chat_id(self, user_id: int, thread_id: int | None = None, chat_id: int | None = None) -> int:
         """Resolve the correct chat_id for sending messages.
 
-        Returns the stored group chat_id when a thread_id is present and a
-        mapping exists, otherwise falls back to user_id (for private chats).
+        When chat_id is provided directly (preferred for multi-group), returns it.
+        Otherwise scans group_chat_ids for any key matching user_id:*:thread_id,
+        then falls back to user_id for private chats.
 
         Every outbound Telegram API call (send_message, edit_message_text,
         delete_message, send_chat_action, edit_forum_topic, etc.) MUST use
         this method instead of raw user_id. Using user_id directly breaks
         supergroup forum topic routing.
         """
+        if chat_id is not None:
+            return chat_id
         if thread_id is not None:
-            key = f"{user_id}:{thread_id}"
-            group_id = self.group_chat_ids.get(key)
-            if group_id is not None:
-                return group_id
+            # Scan for any key matching "user_id:*:thread_id"
+            prefix = f"{user_id}:"
+            suffix = f":{thread_id}"
+            for key, group_id in self.group_chat_ids.items():
+                if key.startswith(prefix) and key.endswith(suffix):
+                    return group_id
         return user_id
 
     async def wait_for_session_map_entry(
@@ -722,58 +744,65 @@ class SessionManager:
     # --- Thread binding management ---
 
     def bind_thread(
-        self, user_id: int, thread_id: int, window_id: str, window_name: str = ""
+        self, user_id: int, chat_id: int, thread_id: int, window_id: str, window_name: str = ""
     ) -> None:
         """Bind a Telegram topic thread to a tmux window.
 
         Args:
             user_id: Telegram user ID
+            chat_id: Telegram group/chat ID (negative for supergroups)
             thread_id: Telegram topic thread ID
             window_id: Tmux window ID (e.g. '@0')
             window_name: Display name for the window (optional)
         """
+        key = f"{chat_id}:{thread_id}"
         if user_id not in self.thread_bindings:
             self.thread_bindings[user_id] = {}
-        self.thread_bindings[user_id][thread_id] = window_id
+        self.thread_bindings[user_id][key] = window_id
         if window_name:
             self.window_display_names[window_id] = window_name
         self._save_state()
         display = window_name or self.get_display_name(window_id)
         logger.info(
-            "Bound thread %d -> window_id %s (%s) for user %d",
+            "Bound thread chat=%d:%d -> window_id %s (%s) for user %d",
+            chat_id,
             thread_id,
             window_id,
             display,
             user_id,
         )
 
-    def unbind_thread(self, user_id: int, thread_id: int) -> str | None:
+    def unbind_thread(self, user_id: int, chat_id: int, thread_id: int) -> str | None:
         """Remove a thread binding. Returns the previously bound window_id, or None."""
+        key = f"{chat_id}:{thread_id}"
         bindings = self.thread_bindings.get(user_id)
-        if not bindings or thread_id not in bindings:
+        if not bindings or key not in bindings:
             return None
-        window_id = bindings.pop(thread_id)
+        window_id = bindings.pop(key)
         if not bindings:
             del self.thread_bindings[user_id]
         self._save_state()
         logger.info(
-            "Unbound thread %d (was %s) for user %d",
+            "Unbound thread chat=%d:%d (was %s) for user %d",
+            chat_id,
             thread_id,
             window_id,
             user_id,
         )
         return window_id
 
-    def get_window_for_thread(self, user_id: int, thread_id: int) -> str | None:
+    def get_window_for_thread(self, user_id: int, chat_id: int, thread_id: int) -> str | None:
         """Look up the window_id bound to a thread."""
+        key = f"{chat_id}:{thread_id}"
         bindings = self.thread_bindings.get(user_id)
         if not bindings:
             return None
-        return bindings.get(thread_id)
+        return bindings.get(key)
 
     def resolve_window_for_thread(
         self,
         user_id: int,
+        chat_id: int,
         thread_id: int | None,
     ) -> str | None:
         """Resolve the tmux window_id for a user's thread.
@@ -782,31 +811,33 @@ class SessionManager:
         """
         if thread_id is None:
             return None
-        return self.get_window_for_thread(user_id, thread_id)
+        return self.get_window_for_thread(user_id, chat_id, thread_id)
 
-    def iter_thread_bindings(self) -> Iterator[tuple[int, int, str]]:
-        """Iterate all thread bindings as (user_id, thread_id, window_id).
+    def iter_thread_bindings(self) -> Iterator[tuple[int, int, int, str]]:
+        """Iterate all thread bindings as (user_id, chat_id, thread_id, window_id).
 
         Provides encapsulated access to thread_bindings without exposing
         the internal data structure directly.
         """
         for user_id, bindings in self.thread_bindings.items():
-            for thread_id, window_id in bindings.items():
-                yield user_id, thread_id, window_id
+            for key, window_id in bindings.items():
+                # key format: "chat_id:thread_id"
+                chat_id_str, thread_id_str = key.rsplit(":", 1)
+                yield user_id, int(chat_id_str), int(thread_id_str), window_id
 
     async def find_users_for_session(
         self,
         session_id: str,
-    ) -> list[tuple[int, str, int]]:
+    ) -> list[tuple[int, str, int, int]]:
         """Find all users whose thread-bound window maps to the given session_id.
 
-        Returns list of (user_id, window_id, thread_id) tuples.
+        Returns list of (user_id, window_id, chat_id, thread_id) tuples.
         """
-        result: list[tuple[int, str, int]] = []
-        for user_id, thread_id, window_id in self.iter_thread_bindings():
+        result: list[tuple[int, str, int, int]] = []
+        for user_id, chat_id, thread_id, window_id in self.iter_thread_bindings():
             resolved = await self.resolve_session_for_window(window_id)
             if resolved and resolved.session_id == session_id:
-                result.append((user_id, window_id, thread_id))
+                result.append((user_id, window_id, chat_id, thread_id))
         return result
 
     # --- Tmux helpers ---
