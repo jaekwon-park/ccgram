@@ -152,10 +152,16 @@ class SessionManager:
                     int(uid): offsets
                     for uid, offsets in state.get("user_window_offsets", {}).items()
                 }
+                # Load group_chat_ids first — needed for old thread_binding migration.
+                # Old key format: "user_id:thread_id" → chat_id
+                # New key format: "user_id:chat_id:thread_id" → chat_id (both stored)
+                raw_gcids = state.get("group_chat_ids", {})
+                self.group_chat_ids = {k: int(v) for k, v in raw_gcids.items()}
+
                 # Load thread_bindings — migrate old int-keyed format on the fly.
                 # Old: {uid: {thread_id_int: window_id}}
                 # New: {uid: {"chat_id:thread_id": window_id}}
-                # Old keys lack ":" so we drop them (will re-bind on next message).
+                # For old keys, look up chat_id from group_chat_ids (old format key).
                 raw_bindings = state.get("thread_bindings", {})
                 self.thread_bindings = {}
                 for uid_str, bindings in raw_bindings.items():
@@ -165,16 +171,24 @@ class SessionManager:
                         if ":" in str(k):
                             new_inner[str(k)] = wid
                         else:
-                            logger.info(
-                                "Dropping old-format thread_binding (no chat_id): uid=%s key=%s",
-                                uid_str, k,
-                            )
+                            # Old format: k is thread_id (int string)
+                            old_gcid_key = f"{uid}:{k}"
+                            chat_id_val = self.group_chat_ids.get(old_gcid_key)
+                            if chat_id_val is not None:
+                                new_key = f"{chat_id_val}:{k}"
+                                new_inner[new_key] = wid
+                                logger.info(
+                                    "Migrated thread_binding: uid=%s thread=%s -> %s (chat=%d)",
+                                    uid_str, k, new_key, chat_id_val,
+                                )
+                            else:
+                                logger.info(
+                                    "Dropping old-format thread_binding (no chat_id found): uid=%s key=%s",
+                                    uid_str, k,
+                                )
                     if new_inner:
                         self.thread_bindings[uid] = new_inner
                 self.window_display_names = state.get("window_display_names", {})
-                self.group_chat_ids = {
-                    k: int(v) for k, v in state.get("group_chat_ids", {}).items()
-                }
 
                 # Detect old format: keys that don't look like window IDs
                 needs_migration = False
