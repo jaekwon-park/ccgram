@@ -245,7 +245,11 @@ class SessionMonitor:
                 # successfully. A non-empty line that fails JSON parsing is
                 # likely a partial write; stop and retry next cycle.
                 # Use the appropriate parser based on backend config.
-                parser = CodexTranscriptParser if config.backend == "codex" else TranscriptParser
+                parser = (
+                    CodexTranscriptParser
+                    if config.backend == "codex"
+                    else TranscriptParser
+                )
                 safe_offset = session.last_byte_offset
                 async for line in f:
                     data = parser.parse_line(line)
@@ -286,7 +290,9 @@ class SessionMonitor:
 
         # Collect all JSONL files sorted by mtime descending
         all_files: list[tuple[float, CodexSessionInfo]] = []
-        year_dirs = sorted(codex_root.iterdir(), reverse=True) if codex_root.exists() else []
+        year_dirs = (
+            sorted(codex_root.iterdir(), reverse=True) if codex_root.exists() else []
+        )
         for year_dir in year_dirs:
             if not year_dir.is_dir():
                 continue
@@ -307,7 +313,9 @@ class SessionMonitor:
                         if not session_cwd:
                             continue
                         try:
-                            norm_cwd = str(__import__("pathlib").Path(session_cwd).resolve())
+                            norm_cwd = str(
+                                __import__("pathlib").Path(session_cwd).resolve()
+                            )
                         except (OSError, ValueError):
                             norm_cwd = session_cwd
                         if norm_cwd in active_cwds:
@@ -400,7 +408,11 @@ class SessionMonitor:
 
                 # Parse new entries using the configured backend parser
                 carry = self._pending_tools.get(session_info.session_id, {})
-                parser = CodexTranscriptParser if config.backend == "codex" else TranscriptParser
+                parser = (
+                    CodexTranscriptParser
+                    if config.backend == "codex"
+                    else TranscriptParser
+                )
                 parsed_entries, remaining = parser.parse_entries(
                     new_entries,
                     pending_tools=carry,

@@ -14,7 +14,10 @@ class TestParseLine:
         "line, expected",
         [
             ('{"type": "response_item"}', {"type": "response_item"}),
-            ('{"type": "session_meta", "cwd": "/home/user"}', {"type": "session_meta", "cwd": "/home/user"}),
+            (
+                '{"type": "session_meta", "cwd": "/home/user"}',
+                {"type": "session_meta", "cwd": "/home/user"},
+            ),
             ("not-json", None),
             ("", None),
             ("   \t  ", None),
@@ -31,7 +34,10 @@ class TestParseLine:
 class TestExtractCwdFromSessionMeta:
     def test_session_meta_with_cwd(self) -> None:
         data = {"type": "session_meta", "cwd": "/home/user/project"}
-        assert CodexTranscriptParser.extract_cwd_from_session_meta(data) == "/home/user/project"
+        assert (
+            CodexTranscriptParser.extract_cwd_from_session_meta(data)
+            == "/home/user/project"
+        )
 
     def test_non_session_meta(self) -> None:
         data = {"type": "response_item", "cwd": "/home/user/project"}
@@ -98,7 +104,9 @@ class TestParseEntriesFunctionCall:
     def test_function_call_produces_tool_use_entry(self) -> None:
         entry = self._make_function_call("Read", {"file_path": "src/main.py"})
         # Use carry-over mode to check pending_tools behaviour
-        result, remaining = CodexTranscriptParser.parse_entries([entry], pending_tools={})
+        result, remaining = CodexTranscriptParser.parse_entries(
+            [entry], pending_tools={}
+        )
         assert len(result) == 1
         assert result[0].role == "assistant"
         assert result[0].content_type == "tool_use"
@@ -167,7 +175,9 @@ class TestParseEntriesFunctionCallOutput:
         ]
 
     def test_tool_pair_produces_tool_result(self) -> None:
-        entries = self._make_tool_pair("Read", {"file_path": "src/main.py"}, "line1\nline2")
+        entries = self._make_tool_pair(
+            "Read", {"file_path": "src/main.py"}, "line1\nline2"
+        )
         result, remaining = CodexTranscriptParser.parse_entries(entries)
         # Should have tool_use + tool_result
         assert len(result) == 2

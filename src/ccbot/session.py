@@ -728,7 +728,9 @@ class SessionManager:
             return jsonl_file
         return None
 
-    async def get_codex_session(self, session_id: str, cwd: str) -> ClaudeSession | None:
+    async def get_codex_session(
+        self, session_id: str, cwd: str
+    ) -> ClaudeSession | None:
         """Get a ClaudeSession for a Codex session file.
 
         Looks up the session file by session_id across date dirs, reads the
@@ -757,7 +759,9 @@ class SessionManager:
                                 if item.get("role") == "assistant":
                                     content = item.get("content", [])
                                     for block in content:
-                                        if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                                        if isinstance(block, dict) and block.get(
+                                            "type"
+                                        ) in ("output_text", "text"):
                                             t = block.get("text", "")
                                             if t:
                                                 summary = t[:50]

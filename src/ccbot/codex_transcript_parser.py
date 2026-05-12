@@ -193,7 +193,11 @@ class CodexTranscriptParser:
 
                 # Parse arguments JSON string into dict
                 try:
-                    inp: dict[str, Any] = json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
+                    inp: dict[str, Any] = (
+                        json.loads(arguments_raw)
+                        if isinstance(arguments_raw, str)
+                        else arguments_raw
+                    )
                 except (json.JSONDecodeError, TypeError):
                     inp = {}
 
@@ -241,19 +245,37 @@ class CodexTranscriptParser:
                                 added = sum(
                                     1
                                     for line in diff_text.split("\n")
-                                    if line.startswith("+") and not line.startswith("+++")
+                                    if line.startswith("+")
+                                    and not line.startswith("+++")
                                 )
                                 removed = sum(
                                     1
                                     for line in diff_text.split("\n")
-                                    if line.startswith("-") and not line.startswith("---")
+                                    if line.startswith("-")
+                                    and not line.startswith("---")
                                 )
-                                stats = f"  ⎿  Added {added} lines, removed {removed} lines"
-                                entry_text += "\n" + stats + "\n" + TranscriptParser._format_expandable_quote(diff_text)
-                    elif result_text and TranscriptParser.EXPANDABLE_QUOTE_START not in tool_summary:
-                        entry_text += "\n" + TranscriptParser._format_tool_result_text(result_text, tool_name)
+                                stats = (
+                                    f"  ⎿  Added {added} lines, removed {removed} lines"
+                                )
+                                entry_text += (
+                                    "\n"
+                                    + stats
+                                    + "\n"
+                                    + TranscriptParser._format_expandable_quote(
+                                        diff_text
+                                    )
+                                )
+                    elif (
+                        result_text
+                        and TranscriptParser.EXPANDABLE_QUOTE_START not in tool_summary
+                    ):
+                        entry_text += "\n" + TranscriptParser._format_tool_result_text(
+                            result_text, tool_name
+                        )
                 elif result_text:
-                    entry_text = TranscriptParser._format_tool_result_text(result_text, tool_name)
+                    entry_text = TranscriptParser._format_tool_result_text(
+                        result_text, tool_name
+                    )
                 else:
                     continue
 
@@ -271,7 +293,9 @@ class CodexTranscriptParser:
                 summary_blocks = item.get("summary", [])
                 thinking_text = cls._extract_reasoning_text(summary_blocks)
                 if thinking_text.strip():
-                    quoted = TranscriptParser._format_expandable_quote(thinking_text.strip())
+                    quoted = TranscriptParser._format_expandable_quote(
+                        thinking_text.strip()
+                    )
                     result.append(
                         ParsedEntry(
                             role="assistant",
@@ -323,7 +347,11 @@ class CodexTranscriptParser:
         results: list[CodexSessionInfo] = []
 
         # Walk year/month/day dirs in reverse chronological order
-        year_dirs = sorted(sessions_root.iterdir(), reverse=True) if sessions_root.exists() else []
+        year_dirs = (
+            sorted(sessions_root.iterdir(), reverse=True)
+            if sessions_root.exists()
+            else []
+        )
         for year_dir in year_dirs:
             if not year_dir.is_dir():
                 continue
