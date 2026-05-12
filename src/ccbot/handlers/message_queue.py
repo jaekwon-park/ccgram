@@ -601,6 +601,7 @@ async def enqueue_content_message(
     text: str | None = None,
     thread_id: int | None = None,
     image_data: list[tuple[str, bytes]] | None = None,
+    role: str | None = None,
 ) -> None:
     """Enqueue a content message task."""
     logger.debug(
