@@ -631,6 +631,37 @@ _IMAGES_DIR = ccbot_dir() / "images"
 _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _is_bot_mentioned(
+    bot_username: str,
+    text: str | None,
+    entities: list | None,
+) -> bool:
+    """Return True if bot is @mentioned in the message text/caption."""
+    if not text or not entities:
+        return False
+    for e in entities:
+        if e.type == "mention":
+            name = text[e.offset : e.offset + e.length].lstrip("@")
+            if name == bot_username:
+                return True
+    return False
+
+
+def _mention_required_and_missing(
+    chat_id: int,
+    thread_id: int | None,
+    bot_username: str,
+    text: str | None,
+    entities: list | None,
+) -> bool:
+    """Return True when the thread requires a mention but the bot isn't mentioned."""
+    if thread_id is None or not config.mention_required_threads:
+        return False
+    if (chat_id, thread_id) not in config.mention_required_threads:
+        return False
+    return not _is_bot_mentioned(bot_username, text, entities)
+
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos sent by the user: download and forward path to Claude Code."""
     user = update.effective_user
@@ -647,6 +678,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat = update.effective_chat
     if chat.type in ("group", "supergroup") and thread_id is not None:
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+
+    # Mention-required threads: only respond when bot is @mentioned
+    caption = update.message.caption if update.message else None
+    cap_entities = update.message.caption_entities if update.message else None
+    if chat and _mention_required_and_missing(
+        chat.id, thread_id, context.bot.username, caption, cap_entities
+    ):
+        return
 
     # Must be in a named topic
     if thread_id is None:
@@ -727,6 +766,12 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat = update.effective_chat
     if chat.type in ("group", "supergroup") and thread_id is not None:
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+
+    # Mention-required threads: voice has no caption, so block entirely
+    if chat and _mention_required_and_missing(
+        chat.id, thread_id, context.bot.username, None, None
+    ):
+        return
 
     if thread_id is None:
         await safe_reply(
@@ -926,6 +971,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
 
     text = update.message.text
+
+    # Mention-required threads: only respond when bot is @mentioned
+    if chat and _mention_required_and_missing(
+        chat.id, thread_id, context.bot.username, text, update.message.entities
+    ):
+        return
 
     # Ignore text in window picker mode (only for the same thread)
     if context.user_data and context.user_data.get(STATE_KEY) == STATE_SELECTING_WINDOW:
