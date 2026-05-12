@@ -101,6 +101,11 @@ class Config:
             os.getenv("CCBOT_SHOW_HIDDEN_DIRS", "").lower() == "true"
         )
 
+        # Backend selection: 'claude' (default) | 'codex'
+        # When set to 'codex', ccgram monitors ~/.codex/sessions/ instead of
+        # ~/.claude/projects/ and uses CodexTranscriptParser for JSONL parsing.
+        self.backend: str = os.getenv("CCBOT_BACKEND", "claude").lower()
+
         # OpenAI API for voice message transcription (optional)
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_base_url: str = os.getenv(
