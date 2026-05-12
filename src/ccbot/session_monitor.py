@@ -91,11 +91,24 @@ class SessionMonitor:
     ) -> None:
         self._message_callback = callback
 
-    async def _get_active_cwds(self) -> set[str]:
-        """Get normalized cwds of all active tmux windows."""
+    async def _get_active_cwds(
+        self,
+        *,
+        window_ids: set[str] | None = None,
+        exclude_window_ids: set[str] | None = None,
+    ) -> set[str]:
+        """Get normalized cwds of active tmux windows.
+
+        window_ids: if set, only include these windows.
+        exclude_window_ids: if set, exclude these windows.
+        """
         cwds = set()
         windows = await tmux_manager.list_windows()
         for w in windows:
+            if window_ids is not None and w.window_id not in window_ids:
+                continue
+            if exclude_window_ids is not None and w.window_id in exclude_window_ids:
+                continue
             try:
                 cwds.add(str(Path(w.cwd).resolve()))
             except (OSError, ValueError):
@@ -104,7 +117,9 @@ class SessionMonitor:
 
     async def scan_projects(self) -> list[SessionInfo]:
         """Scan projects that have active tmux windows."""
-        active_cwds = await self._get_active_cwds()
+        active_cwds = await self._get_active_cwds(
+            exclude_window_ids=config.codex_windows or None
+        )
         if not active_cwds:
             return []
 
@@ -244,12 +259,9 @@ class SessionMonitor:
                 # Track safe_offset: only advance past lines that parsed
                 # successfully. A non-empty line that fails JSON parsing is
                 # likely a partial write; stop and retry next cycle.
-                # Use the appropriate parser based on backend config.
-                parser = (
-                    CodexTranscriptParser
-                    if config.backend == "codex"
-                    else TranscriptParser
-                )
+                # Select parser by file path: codex sessions live under .codex/
+                is_codex_file = ".codex" in str(file_path)
+                parser = CodexTranscriptParser if is_codex_file else TranscriptParser
                 safe_offset = session.last_byte_offset
                 async for line in f:
                     data = parser.parse_line(line)
@@ -276,10 +288,13 @@ class SessionMonitor:
     async def scan_codex_sessions(self) -> list[SessionInfo]:
         """Scan Codex session files for active tmux windows.
 
-        Used when config.backend == 'codex'. Searches ~/.codex/sessions/
-        for files whose session_meta.cwd matches an active tmux window cwd.
+        Used when config.backend == 'codex' or config.codex_windows is set.
+        Searches ~/.codex/sessions/ for files whose cwd matches an active window.
+        When codex_windows is set, only scans cwds for those windows.
         """
-        active_cwds = await self._get_active_cwds()
+        # When codex_windows is configured, only scan those specific windows
+        window_filter = config.codex_windows if config.codex_windows else None
+        active_cwds = await self._get_active_cwds(window_ids=window_filter)
         if not active_cwds:
             return []
 
@@ -346,8 +361,13 @@ class SessionMonitor:
         """
         new_messages = []
 
-        # Scan sessions using the configured backend
-        if config.backend == "codex":
+        # Scan sessions: always run claude scan; also run codex scan when needed
+        if config.codex_windows:
+            # Per-window codex: run both scans and merge
+            claude_sessions = await self.scan_projects()
+            codex_sessions = await self.scan_codex_sessions()
+            sessions = claude_sessions + codex_sessions
+        elif config.backend == "codex":
             sessions = await self.scan_codex_sessions()
         else:
             sessions = await self.scan_projects()

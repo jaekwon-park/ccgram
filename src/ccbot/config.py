@@ -106,6 +106,13 @@ class Config:
         # ~/.claude/projects/ and uses CodexTranscriptParser for JSONL parsing.
         self.backend: str = os.getenv("CCBOT_BACKEND", "claude").lower()
 
+        # Per-window codex backend: comma-separated window IDs (e.g. "@7,@8")
+        # These windows use codex sessions/parser regardless of global backend.
+        codex_windows_str = os.getenv("CCBOT_CODEX_WINDOWS", "")
+        self.codex_windows: set[str] = {
+            w.strip() for w in codex_windows_str.split(",") if w.strip()
+        }
+
         # OpenAI API for voice message transcription (optional)
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_base_url: str = os.getenv(
