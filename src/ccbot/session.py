@@ -152,7 +152,7 @@ class SessionManager:
                     for uid, offsets in state.get("user_window_offsets", {}).items()
                 }
                 self.thread_bindings = {
-                    int(uid): {int(tid): wid for tid, wid in bindings.items()}
+                    int(uid): {tid: wid for tid, wid in bindings.items()}
                     for uid, bindings in state.get("thread_bindings", {}).items()
                 }
                 self.window_display_names = state.get("window_display_names", {})
