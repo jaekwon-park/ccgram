@@ -36,6 +36,7 @@ class SessionInfo:
 
     session_id: str
     file_path: Path
+    cwd: str = ""  # populated by scan_codex_sessions for window matching
 
 
 @dataclass
@@ -345,7 +346,9 @@ class SessionMonitor:
         all_files.sort(key=lambda x: x[0], reverse=True)
         for _, info in all_files:
             sessions.append(
-                SessionInfo(session_id=info.session_id, file_path=info.file_path)
+                SessionInfo(
+                    session_id=info.session_id, file_path=info.file_path, cwd=info.cwd
+                )
             )
 
         return sessions
@@ -586,6 +589,38 @@ class SessionMonitor:
                 # Detect session_map changes and cleanup replaced/removed sessions
                 current_map = await self._detect_and_cleanup_changes()
                 active_session_ids = set(current_map.values())
+
+                # Register codex sessions for per-window codex windows
+                if config.codex_windows:
+                    codex_scanned = await self.scan_codex_sessions()
+                    windows = await tmux_manager.list_windows()
+                    # Build cwd → window_id map for codex windows
+                    cwd_to_wid: dict[str, str] = {}
+                    for w in windows:
+                        if w.window_id not in config.codex_windows:
+                            continue
+                        try:
+                            cwd_to_wid[str(Path(w.cwd).resolve())] = w.window_id
+                        except (OSError, ValueError):
+                            cwd_to_wid[w.cwd] = w.window_id
+                    for s in codex_scanned:
+                        active_session_ids.add(s.session_id)
+                        # Match session to its window via cwd
+                        try:
+                            norm_cwd = str(Path(s.cwd).resolve())
+                        except (OSError, ValueError):
+                            norm_cwd = s.cwd
+                        wid = cwd_to_wid.get(norm_cwd)
+                        if wid:
+                            state = session_manager.get_window_state(wid)
+                            if state.session_id != s.session_id:
+                                state.session_id = s.session_id
+                                state.cwd = s.cwd
+                                logger.info(
+                                    "Codex session registered: window=%s sid=%s",
+                                    wid,
+                                    s.session_id,
+                                )
 
                 # Check for new messages (all I/O is async)
                 new_messages = await self.check_for_updates(active_session_ids)
