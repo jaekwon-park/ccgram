@@ -943,6 +943,21 @@ class SessionManager:
                 chat_id_str, thread_id_str = key.rsplit(":", 1)
                 yield user_id, int(chat_id_str), int(thread_id_str), window_id
 
+    def find_users_for_window(
+        self,
+        window_id: str,
+    ) -> list[tuple[int, int, int | None]]:
+        """Find all (user_id, chat_id, thread_id) tuples bound to a window.
+
+        Used by the outbox watcher to route file sends.
+        Returns list of (user_id, chat_id, thread_id) tuples.
+        """
+        result: list[tuple[int, int, int | None]] = []
+        for uid, chat_id, thread_id, wid in self.iter_thread_bindings():
+            if wid == window_id:
+                result.append((uid, chat_id, thread_id))
+        return result
+
     async def find_users_for_session(
         self,
         session_id: str,

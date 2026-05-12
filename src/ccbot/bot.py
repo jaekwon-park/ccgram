@@ -132,6 +132,7 @@ from .handlers.message_sender import (
 )
 from .markdown_v2 import convert_markdown
 from .handlers.response_builder import build_response_parts
+from .handlers.outbox_watcher import start_outbox_watcher, stop_outbox_watcher
 from .handlers.status_polling import status_poll_loop
 from .screenshot import text_to_image
 from .session import session_manager
@@ -2112,6 +2113,10 @@ async def post_init(application: Application) -> None:
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     logger.info("Status polling task started")
 
+    # Start outbox watcher
+    start_outbox_watcher(application.bot)
+    logger.info("Outbox watcher started")
+
 
 async def post_shutdown(application: Application) -> None:
     global _status_poll_task
@@ -2128,6 +2133,8 @@ async def post_shutdown(application: Application) -> None:
 
     # Stop all queue workers
     await shutdown_workers()
+
+    stop_outbox_watcher()
 
     if session_monitor:
         session_monitor.stop()

@@ -112,6 +112,24 @@ class Config:
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         )
 
+        # Threads that require bot mention to respond (format: chat_id:thread_id,...)
+        mention_required_str = os.getenv("CCBOT_MENTION_REQUIRED_THREADS", "")
+        self.mention_required_threads: set[tuple[int, int]] = set()
+        for entry in mention_required_str.split(","):
+            entry = entry.strip()
+            if ":" in entry:
+                try:
+                    cid, tid = entry.split(":", 1)
+                    self.mention_required_threads.add((int(cid), int(tid)))
+                except ValueError:
+                    pass
+
+        # Outbox: directory where Claude can drop files for ccgram to send
+        self.outbox_dir: Path = Path(
+            os.getenv("CCBOT_OUTBOX_DIR", str(self.config_dir / "outbox"))
+        )
+        self.outbox_ttl: int = int(os.getenv("CCBOT_OUTBOX_TTL", "600"))
+
         # Scrub sensitive vars from os.environ so child processes never inherit them.
         # Values are already captured in Config attributes above.
         for var in SENSITIVE_ENV_VARS:
