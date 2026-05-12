@@ -49,7 +49,7 @@ class TestParseEntriesAssistantText:
     def _make_message_entry(self, text: str, role: str = "assistant") -> dict:
         return {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "message",
                 "role": role,
                 "content": [{"type": "output_text", "text": text}],
@@ -87,7 +87,7 @@ class TestParseEntriesFunctionCall:
     ) -> dict:
         return {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call",
                 "name": name,
                 "arguments": json.dumps(arguments),
@@ -111,7 +111,7 @@ class TestParseEntriesFunctionCall:
     def test_function_call_no_call_id(self) -> None:
         entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call",
                 "name": "Bash",
                 "arguments": json.dumps({"command": "ls"}),
@@ -126,7 +126,7 @@ class TestParseEntriesFunctionCall:
     def test_function_call_invalid_arguments_json(self) -> None:
         entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call",
                 "name": "CustomTool",
                 "arguments": "not valid json",
@@ -149,7 +149,7 @@ class TestParseEntriesFunctionCallOutput:
         return [
             {
                 "type": "response_item",
-                "item": {
+                "payload": {
                     "type": "function_call",
                     "name": name,
                     "arguments": json.dumps(arguments),
@@ -158,7 +158,7 @@ class TestParseEntriesFunctionCallOutput:
             },
             {
                 "type": "response_item",
-                "item": {
+                "payload": {
                     "type": "function_call_output",
                     "call_id": call_id,
                     "output": output,
@@ -178,7 +178,7 @@ class TestParseEntriesFunctionCallOutput:
     def test_unmatched_tool_result_skipped(self) -> None:
         entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call_output",
                 "call_id": "unknown_id",
                 "output": "some output",
@@ -197,7 +197,7 @@ class TestParseEntriesReasoning:
     def test_reasoning_produces_thinking_entry(self) -> None:
         entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "reasoning",
                 "summary": [{"type": "summary_text", "text": "Let me think..."}],
             },
@@ -211,7 +211,7 @@ class TestParseEntriesReasoning:
     def test_empty_reasoning_skipped(self) -> None:
         entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "reasoning",
                 "summary": [],
             },
@@ -242,7 +242,7 @@ class TestParseEntriesCarryOver:
         """Tool call in one batch, result in next — simulates monitor mode."""
         call_entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call",
                 "name": "Bash",
                 "arguments": json.dumps({"command": "ls"}),
@@ -259,7 +259,7 @@ class TestParseEntriesCarryOver:
         # Second batch with the tool_result
         output_entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call_output",
                 "call_id": "call_carry",
                 "output": "file.txt",
@@ -276,7 +276,7 @@ class TestParseEntriesCarryOver:
         """In one-shot mode, tool_use is emitted immediately (not accumulated)."""
         call_entry = {
             "type": "response_item",
-            "item": {
+            "payload": {
                 "type": "function_call",
                 "name": "Read",
                 "arguments": json.dumps({"file_path": "README.md"}),

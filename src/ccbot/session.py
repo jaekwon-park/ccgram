@@ -752,7 +752,7 @@ class SessionManager:
                         data = json.loads(line)
                         # Use first assistant message as summary fallback
                         if not summary and data.get("type") == "response_item":
-                            item = data.get("item", {})
+                            item = data.get("payload", {})
                             if isinstance(item, dict) and item.get("type") == "message":
                                 if item.get("role") == "assistant":
                                     content = item.get("content", [])

@@ -45,7 +45,7 @@ class CodexTranscriptParser:
 
     Codex JSONL entry structure:
     - type: "session_meta" | "response_item" | "event_msg"
-    - For response_item: item.type = "message" | "function_call"
+    - For response_item: payload.type = "message" | "function_call"
       | "function_call_output" | "reasoning"
     """
 
@@ -150,7 +150,7 @@ class CodexTranscriptParser:
             if entry_type not in ("response_item",):
                 continue
 
-            item = data.get("item")
+            item = data.get("payload")
             if not isinstance(item, dict):
                 continue
 
