@@ -20,6 +20,7 @@ from typing import Any, Callable, Awaitable
 
 import aiofiles
 
+from .codex_transcript_parser import CodexTranscriptParser, CodexSessionInfo
 from .config import config
 from .monitor_state import MonitorState, TrackedSession
 from .tmux_manager import tmux_manager
@@ -243,9 +244,11 @@ class SessionMonitor:
                 # Track safe_offset: only advance past lines that parsed
                 # successfully. A non-empty line that fails JSON parsing is
                 # likely a partial write; stop and retry next cycle.
+                # Use the appropriate parser based on backend config.
+                parser = CodexTranscriptParser if config.backend == "codex" else TranscriptParser
                 safe_offset = session.last_byte_offset
                 async for line in f:
-                    data = TranscriptParser.parse_line(line)
+                    data = parser.parse_line(line)
                     if data:
                         new_entries.append(data)
                         safe_offset = await f.tell()
@@ -266,6 +269,64 @@ class SessionMonitor:
             logger.error("Error reading session file %s: %s", file_path, e)
         return new_entries
 
+    async def scan_codex_sessions(self) -> list[SessionInfo]:
+        """Scan Codex session files for active tmux windows.
+
+        Used when config.backend == 'codex'. Searches ~/.codex/sessions/
+        for files whose session_meta.cwd matches an active tmux window cwd.
+        """
+        active_cwds = await self._get_active_cwds()
+        if not active_cwds:
+            return []
+
+        sessions: list[SessionInfo] = []
+        codex_root = CodexTranscriptParser.get_codex_sessions_path()
+        if not codex_root.exists():
+            return sessions
+
+        # Collect all JSONL files sorted by mtime descending
+        all_files: list[tuple[float, CodexSessionInfo]] = []
+        year_dirs = sorted(codex_root.iterdir(), reverse=True) if codex_root.exists() else []
+        for year_dir in year_dirs:
+            if not year_dir.is_dir():
+                continue
+            for month_dir in sorted(year_dir.iterdir(), reverse=True):
+                if not month_dir.is_dir():
+                    continue
+                for day_dir in sorted(month_dir.iterdir(), reverse=True):
+                    if not day_dir.is_dir():
+                        continue
+                    for jsonl_file in day_dir.glob("*.jsonl"):
+                        try:
+                            mtime = jsonl_file.stat().st_mtime
+                        except OSError:
+                            continue
+                        session_cwd = await asyncio.to_thread(
+                            CodexTranscriptParser._read_cwd_from_codex_file, jsonl_file
+                        )
+                        if not session_cwd:
+                            continue
+                        try:
+                            norm_cwd = str(__import__("pathlib").Path(session_cwd).resolve())
+                        except (OSError, ValueError):
+                            norm_cwd = session_cwd
+                        if norm_cwd in active_cwds:
+                            codex_info = CodexSessionInfo(
+                                session_id=jsonl_file.stem,
+                                file_path=jsonl_file,
+                                cwd=session_cwd,
+                            )
+                            all_files.append((mtime, codex_info))
+
+        # Sort newest first
+        all_files.sort(key=lambda x: x[0], reverse=True)
+        for _, info in all_files:
+            sessions.append(
+                SessionInfo(session_id=info.session_id, file_path=info.file_path)
+            )
+
+        return sessions
+
     async def check_for_updates(self, active_session_ids: set[str]) -> list[NewMessage]:
         """Check all sessions for new assistant messages.
 
@@ -277,8 +338,11 @@ class SessionMonitor:
         """
         new_messages = []
 
-        # Scan projects to get available session files
-        sessions = await self.scan_projects()
+        # Scan sessions using the configured backend
+        if config.backend == "codex":
+            sessions = await self.scan_codex_sessions()
+        else:
+            sessions = await self.scan_projects()
 
         # Only process sessions that are in session_map
         for session_info in sessions:
@@ -334,9 +398,10 @@ class SessionMonitor:
                         f"session {session_info.session_id}"
                     )
 
-                # Parse new entries using the shared logic, carrying over pending tools
+                # Parse new entries using the configured backend parser
                 carry = self._pending_tools.get(session_info.session_id, {})
-                parsed_entries, remaining = TranscriptParser.parse_entries(
+                parser = CodexTranscriptParser if config.backend == "codex" else TranscriptParser
+                parsed_entries, remaining = parser.parse_entries(
                     new_entries,
                     pending_tools=carry,
                 )

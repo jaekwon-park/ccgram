@@ -708,6 +708,84 @@ class SessionManager:
         self._save_state()
         return None
 
+    # --- Codex session support ---
+
+    def _build_codex_session_file_path(self, session_id: str, cwd: str) -> Path | None:
+        """Build the direct file path for a Codex session from session_id and cwd.
+
+        Codex sessions live at:
+          ~/.codex/sessions/YYYY/MM/DD/{session_id}.jsonl
+        Since we don't know the exact date dir, we use scan_codex_sessions to find it.
+        """
+        from .codex_transcript_parser import CodexTranscriptParser
+
+        sessions_root = CodexTranscriptParser.get_codex_sessions_path()
+        if not sessions_root.exists():
+            return None
+
+        # Search for the specific session_id in date subdirs
+        for jsonl_file in sessions_root.rglob(f"{session_id}.jsonl"):
+            return jsonl_file
+        return None
+
+    async def get_codex_session(self, session_id: str, cwd: str) -> ClaudeSession | None:
+        """Get a ClaudeSession for a Codex session file.
+
+        Looks up the session file by session_id across date dirs, reads the
+        file to get summary info, and returns a ClaudeSession object for
+        compatibility with the rest of the codebase.
+        """
+        file_path = self._build_codex_session_file_path(session_id, cwd)
+        if not file_path or not file_path.exists():
+            return None
+
+        summary = ""
+        message_count = 0
+        try:
+            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+                async for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    message_count += 1
+                    try:
+                        data = json.loads(line)
+                        # Use first assistant message as summary fallback
+                        if not summary and data.get("type") == "response_item":
+                            item = data.get("item", {})
+                            if isinstance(item, dict) and item.get("type") == "message":
+                                if item.get("role") == "assistant":
+                                    content = item.get("content", [])
+                                    for block in content:
+                                        if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                                            t = block.get("text", "")
+                                            if t:
+                                                summary = t[:50]
+                                                break
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return None
+
+        if not summary:
+            summary = "Codex session"
+
+        return ClaudeSession(
+            session_id=session_id,
+            summary=summary,
+            message_count=message_count,
+            file_path=str(file_path),
+        )
+
+    def scan_codex_sessions(self, cwd: str) -> list[Any]:
+        """Scan Codex session files for the given working directory.
+
+        Returns CodexSessionInfo list (from CodexTranscriptParser).
+        """
+        from .codex_transcript_parser import CodexTranscriptParser
+
+        return CodexTranscriptParser.scan_codex_sessions(cwd)
+
     # --- User window offset management ---
 
     def update_user_window_offset(
