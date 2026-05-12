@@ -69,3 +69,17 @@ venv.bak/
 # Project specific
 .uv/
 uv.lock
+
+# Secrets & credentials
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+auth.json
+secrets.json
+credentials.json
+*secret*
+*_secret*
+*secret_*
