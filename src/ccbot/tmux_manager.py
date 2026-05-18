@@ -223,6 +223,28 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_capture)
 
+    async def _is_text_stuck_in_prompt(self, window_id: str, text: str) -> bool:
+        """Check whether the sent text is still visible in the Claude TUI prompt.
+
+        When Claude is busy at send time, it accepts the text but ignores the
+        follow-up Enter, leaving the text stranded in the prompt line. This
+        helper inspects the last prompt indicator (``❯ ...``) in the captured
+        pane to decide if a retry is needed.
+        """
+        pane_text = await self.capture_pane(window_id)
+        if not pane_text:
+            return False
+        first_line = text.split("\n", 1)[0].strip()
+        if not first_line:
+            return False
+        needle = first_line[:30]
+        for line in reversed(pane_text.splitlines()):
+            if "❯" not in line:
+                continue
+            after = line.split("❯", 1)[1].strip()
+            return after.startswith(needle)
+        return False
+
     async def send_keys(
         self, window_id: str, text: str, enter: bool = True, literal: bool = True
     ) -> bool:
@@ -281,8 +303,26 @@ class TmuxManager:
                     logger.error(f"Failed to send Enter to window {window_id}: {e}")
                     return False
 
+            def _send_ctrl_u() -> bool:
+                session = self.get_session()
+                if not session:
+                    return False
+                try:
+                    window = session.windows.get(window_id=window_id)
+                    if not window:
+                        return False
+                    pane = window.active_pane
+                    if not pane:
+                        return False
+                    pane.send_keys("C-u", enter=False, literal=False)
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to send C-u to window {window_id}: {e}")
+                    return False
+
             # Claude Code's ! command mode: send "!" first so the TUI
             # switches to bash mode, wait 1s, then send the rest.
+            # ! mode is not retried — bash-mode prompt has different framing.
             if text.startswith("!"):
                 if not await asyncio.to_thread(_send_literal, "!"):
                     return False
@@ -291,11 +331,38 @@ class TmuxManager:
                     await asyncio.sleep(1.0)
                     if not await asyncio.to_thread(_send_literal, rest):
                         return False
-            else:
+                await asyncio.sleep(0.5)
+                return await asyncio.to_thread(_send_enter)
+
+            if not await asyncio.to_thread(_send_literal, text):
+                return False
+            await asyncio.sleep(0.5)
+            if not await asyncio.to_thread(_send_enter):
+                return False
+
+            # Claude TUI swallows Enter when busy at send time, leaving text
+            # stranded in the prompt. Verify submission and retry with
+            # line-clear (C-u) + retype + Enter, up to 2 attempts.
+            for attempt in range(2):
+                await asyncio.sleep(0.3)
+                if not await self._is_text_stuck_in_prompt(window_id, text):
+                    return True
+                logger.warning(
+                    "Text stuck in prompt for %s, retry %d/2", window_id, attempt + 1
+                )
+                if not await asyncio.to_thread(_send_ctrl_u):
+                    return False
+                await asyncio.sleep(0.1)
                 if not await asyncio.to_thread(_send_literal, text):
                     return False
-            await asyncio.sleep(0.5)
-            return await asyncio.to_thread(_send_enter)
+                await asyncio.sleep(0.5)
+                if not await asyncio.to_thread(_send_enter):
+                    return False
+            await asyncio.sleep(0.3)
+            if await self._is_text_stuck_in_prompt(window_id, text):
+                logger.error("Failed to submit text to %s after retries", window_id)
+                return False
+            return True
 
         # Other cases: special keys (literal=False) or no-enter
         def _sync_send_keys() -> bool:
